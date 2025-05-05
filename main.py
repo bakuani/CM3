@@ -5,6 +5,32 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
+class ImproperIntegralAnalyzer:
+    @staticmethod
+    def check_convergence(f, a, b, break_points, eps=1e-6, max_iter=100):
+        total = 0.0
+        try:
+            points = sorted([a, b] + break_points)
+            for i in range(len(points) - 1):
+                left, right = points[i], points[i + 1]
+                delta = 0.1
+                prev = None
+                for _ in range(max_iter):
+                    l = left + delta if left in break_points else left
+                    r = right - delta if right in break_points else right
+                    part = IntegralMethods.trapezoid(f, l, r, 1000)
+                    if prev and abs(part - prev) < eps:
+                        total += part
+                        break
+                    prev = part
+                    delta *= 0.5
+                else:
+                    return False, total
+            return True, total
+        except:
+            return False, None
+
+
 class IntegralMethods:
     @staticmethod
     def rectangle(f, a, b, n, mode='middle'):
@@ -15,7 +41,7 @@ class IntegralMethods:
                 x = a + i * h
             elif mode == 'right':
                 x = a + (i + 1) * h
-            else:  # middle
+            else:
                 x = a + (i + 0.5) * h
             result += f(x)
         return result * h
@@ -39,13 +65,47 @@ class IntegralMethods:
             sum_even += f(a + 2 * i * h)
         return h / 3 * (f(a) + f(b) + 4 * sum_odd + 2 * sum_even)
 
+    @staticmethod
+    def adaptive_integrate(f, a, b, method, break_points, eps=1e-6, max_iter=100):
+        result = 0.0
+        points = sorted([a, b] + break_points)
+        for i in range(len(points) - 1):
+            left, right = points[i], points[i + 1]
+            if left in break_points:
+                delta = 1e-6
+                prev = None
+                for _ in range(max_iter):
+                    part = method(f, left + delta, right)
+                    if prev and abs(part - prev) < eps:
+                        result += part
+                        break
+                    prev = part
+                    delta *= 0.5
+                else:
+                    raise ValueError("Интеграл расходится")
+            elif right in break_points:
+                delta = 1e-6
+                prev = None
+                for _ in range(max_iter):
+                    part = method(f, left, right - delta)
+                    if prev and abs(part - prev) < eps:
+                        result += part
+                        break
+                    prev = part
+                    delta *= 0.5
+                else:
+                    raise ValueError("Интеграл расходится")
+            else:
+                result += method(f, left, right, 1000)
+        return result
+
 
 class FunctionEvaluator:
     def __init__(self):
         self.functions = [
             {'func': lambda x: -x ** 3 - x ** 2 + x + 3, 'desc': '-x³ -x² +x +3'},
-            {'func': lambda x: math.cos(x) - x, 'desc': 'cos(x) - x'},
-            {'func': lambda x: x ** 2 + 1, 'desc': 'x² + 1'}
+            {'func': lambda x: 1 / math.sqrt(x) if x != 0 else float('inf'), 'desc': '1/√x (x=0 - разрыв)'},
+            {'func': lambda x: 1 / (1 - x) if x != 1 else float('inf'), 'desc': '1/(1-x) (x=1 - разрыв)'}
         ]
 
     def get_function(self, index):
@@ -98,10 +158,14 @@ class IntegrationTab(ttk.Frame):
         self.result_text = tk.Text(self, height=10, width=60, state="disabled")
         self.result_text.grid(row=7, column=0, columnspan=2, padx=10, pady=10)
 
+        ttk.Label(self, text="Точки разрыва (через ;):").grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        self.break_entry = ttk.Entry(self)
+        self.break_entry.grid(row=8, column=1, padx=10, pady=5)
+
         self.figure = Figure(figsize=(6, 4), dpi=100)
         self.plot = self.figure.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.figure, self)
-        self.canvas.get_tk_widget().grid(row=0, column=2, rowspan=8, padx=10, pady=10)
+        self.canvas.get_tk_widget().grid(row=0, column=2, rowspan=9, padx=10, pady=10)
 
     def _calculate(self):
         try:
@@ -110,46 +174,49 @@ class IntegrationTab(ttk.Frame):
             eps = float(getattr(self, 'Точность ε_entry').get().replace(',', '.'))
             n0 = int(getattr(self, 'Начальное n_entry').get())
             func = self.func_eval.get_function(self.func_combo.current())
+            break_points = [float(x.strip()) for x in self.break_entry.get().split(';') if x.strip()]
 
-            result, n = self._runge_rule(func, a, b, eps, n0, self.method_combo.current())
+            converges, _ = ImproperIntegralAnalyzer.check_convergence(func, a, b, break_points)
+            if not converges:
+                messagebox.showwarning("Результат", "Интеграл не существует")
+                return
+
+            method = self._get_selected_method()
+            result = IntegralMethods.adaptive_integrate(
+                func, a, b, method, break_points, eps
+            )
 
             self.result_text.config(state="normal")
             self.result_text.delete(1.0, tk.END)
             self.result_text.insert(tk.END,
                                     f"Значение интеграла: {result:.8f}\n"
-                                    f"Достигнутая точность: ε = {eps:.1e}\n"
-                                    f"Число разбиений: {n}\n")
+                                    f"Точность: ε = {eps:.1e}\n"
+                                    f"Число разбиений: {n0}\n")
             self.result_text.config(state="disabled")
 
             self._plot_function(func, a, b)
 
+        except ValueError as ve:
+            if "расходится" in str(ve):
+                messagebox.showwarning("Результат", "Интеграл не существует")
+            else:
+                messagebox.showerror("Ошибка", str(ve))
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка вычислений: {str(e)}")
 
-    def _runge_rule(self, f, a, b, eps, n0, method):
-        n = n0
-        while True:
-            res1 = self._apply_method(f, a, b, n, method)
-            res2 = self._apply_method(f, a, b, 2 * n, method)
-            error = abs(res1 - res2) / (2 ** 2 - 1)
-
-            if error < eps or n > 1000000:
-                return res2, 2 * n
-            n *= 2
-
-    def _apply_method(self, f, a, b, n, method):
-        if method < 3:
-            mode = ['left', 'right', 'middle'][method]
-            return IntegralMethods.rectangle(f, a, b, n, mode)
-        elif method == 3:
-            return IntegralMethods.trapezoid(f, a, b, n)
+    def _get_selected_method(self):
+        method_idx = self.method_combo.current()
+        if method_idx < 3:
+            return lambda f, a, b, n: IntegralMethods.rectangle(f, a, b, n, ['left', 'right', 'middle'][method_idx])
+        elif method_idx == 3:
+            return lambda f, a, b, n: IntegralMethods.trapezoid(f, a, b, n)
         else:
-            return IntegralMethods.simpson(f, a, b, n)
+            return lambda f, a, b, n: IntegralMethods.simpson(f, a, b, n)
 
     def _plot_function(self, f, a, b):
         num_points = 400
         x = [a + i * (b - a) / (num_points - 1) for i in range(num_points)]
-        y = [f(xi) for xi in x]
+        y = [f(xi) if not math.isinf(f(xi)) else None for xi in x]
 
         ax = self.plot
         ax.clear()
@@ -167,8 +234,7 @@ class IntegralCalculatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Численное интегрирование")
-        self.geometry("1000x600")
-
+        self.geometry("1200x800")
         self.notebook = ttk.Notebook(self)
         self.int_tab = IntegrationTab(self.notebook)
         self.notebook.add(self.int_tab, text="Интегралы")
